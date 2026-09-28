@@ -28,6 +28,17 @@ class EntryPayload(BaseModel):
     remark: str | None = None
 
 
+class ImportReport(BaseModel):
+    """台账导入结果：合并数量与被跳过行号（表格行号，含表头，从 1 起）。"""
+
+    ok: bool = True
+    created: int = 0
+    updated: int = 0
+    imported: int = 0
+    skipped_rows: list[int] = Field(default_factory=list)
+    skipped: list[dict[str, Any]] = Field(default_factory=list)
+
+
 
 class InterlockEntry(BaseModel):
     """联锁道岔明细结构。"""
