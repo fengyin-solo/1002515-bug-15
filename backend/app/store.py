@@ -27,6 +27,10 @@ class Store:
                 return row
         return None
 
+    def replace(self, module: str, rows: list[dict[str, Any]]) -> None:
+        """整表替换：批量导入先在副本上合并，确认无误后用它一次性换入，避免留下半份数据。"""
+        self._tables[module] = rows
+
     def overview(self) -> dict[str, object]:
         modules: list[dict[str, object]] = []
         for name in self.module_names():

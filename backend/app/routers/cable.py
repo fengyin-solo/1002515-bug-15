@@ -1,18 +1,19 @@
-"""信号电缆接口：维护信号电缆，覆盖登记报警、查找接地点、办理更换等动作。"""
+"""信号电缆接口：维护信号电缆，覆盖登记报警、查找接地点、办理更换、表格导入导出。"""
 from __future__ import annotations
 
-from typing import Any
+import csv
+import io
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from app.schemas import ActionResult, EntryPayload, PageResult
-from app.services.cable import CableService
+from app.services.cable import COLUMNS, BatchRejected, CableService
 
 router = APIRouter(prefix="/api/cable", tags=["信号电缆"])
 
 service = CableService()
 
-LIST_FIELDS = ["电缆编号", "起止站点", "电缆芯数", "绝缘电阻", "对地电压", "敷设方式", "接头数量", "电缆状态"]
 STATUSES = ["绝缘良好", "绝缘下降", "接地报警", "已更换"]
 
 
@@ -28,6 +29,47 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+# 注意：/import、/export 必须声明在 /{entry_id} 之前，否则会被当成 entry_id 截获。
+@router.post("/import", response_model=ActionResult)
+async def import_entries(request: Request) -> ActionResult:
+    """按电缆编号合并导入 CSV 台账：表头顺序不符或内容非法时整批退回，一条不落库。"""
+    text = (await request.body()).decode("utf-8-sig")
+    try:
+        result = service.import_rows(text)
+    except BatchRejected as exc:
+        # 整批退回属于可预期的业务失败，用 200 + ok=False 让页面直接展示原因
+        return ActionResult(ok=False, message=str(exc))
+    skipped = result["skipped_rows"]
+    skipped_note = f"，跳过空行/无编号行：第 {'、'.join(str(n) for n in skipped)} 行" if skipped else ""
+    message = (
+        f"导入完成：新增 {result['created']} 条，按电缆编号合并更新 {result['updated']} 条"
+        f"，共处理 {result['total']} 行{skipped_note}"
+    )
+    return ActionResult(ok=True, message=message, entry=result)
+
+
+@router.get("/export")
+def export_entries(
+    keyword: str | None = Query(default=None, description="按电缆编号检索，与列表页筛选一致"),
+    status: str | None = Query(default=None, description="绝缘良好、绝缘下降、接地报警、已更换"),
+) -> Response:
+    """导出当前筛选条件下的信号电缆清单，字段与台账列一致（含对地电压、电缆状态）。"""
+    items = service.export_entries(keyword=keyword, status=status)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(COLUMNS)
+    for item in items:
+        writer.writerow(["" if item.get(column) is None else item.get(column) for column in COLUMNS])
+    # utf-8-sig（BOM）保证 Excel 直接打开不乱码
+    payload = "\ufeff" + buffer.getvalue()
+    filename = quote("信号电缆清单.csv")
+    return Response(
+        content=payload.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+    )
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -56,10 +98,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出信号电缆清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "cable", "total": total, "items": items}
